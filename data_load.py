@@ -27,8 +27,8 @@ class S3D_loader(data.Dataset):
                 right_path=[]
                 self.image_paths = []
                 self.depth_paths = []
-                self.semantic_paths = []
                 dir_sub_dir=[]
+ 
 
                 for dir_sub in dir_path:
                     
@@ -43,11 +43,11 @@ class S3D_loader(data.Dataset):
                 for final_path in dir_sub_dir:
                     self.image_paths.append(os.path.join(final_path,'rgb_rawlight.png'))                    
                     self.depth_paths.append(os.path.join(final_path,'depth.png'))                    
-                    # self.semantic_paths.append(os.path.join(final_path,'semantic.png'))                    
-                    
+
+
+
                 self.transform = transform
                 self.transform_t = transform_t
-
 
     def __getitem__(self,index):
            
@@ -55,20 +55,19 @@ class S3D_loader(data.Dataset):
             
             image_path = self.image_paths[index]
             depth_path = self.depth_paths[index]
-                
-            image = Image.open(image_path).convert('RGB')
-            depth = io.imread(depth_path,as_gray=True).astype(np.float)
+            import cv2
+            image = np.array(Image.open(image_path).convert('RGB'),np.float32)
+            # depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED).astype(np.float32).reshape(image.shape[0],image.shape[1],1)
+            depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED).astype(np.float32).reshape(image.shape[0],image.shape[1],1)
             mask = (depth>0.)
-
+            image = (torch.from_numpy((image/(pow(2,8)-1)).transpose(2,0,1)))
+            depth = (torch.from_numpy((depth/1000.).transpose(2,0,1)))
+            mask = (torch.from_numpy((mask/1000.).transpose(2,0,1)))
             data=[]
 
-        if self.transform is not None:
-            data = {'color':self.transform(image),'depth':self.transform_t(depth)/2048., 'mask':self.transform_t(mask)}
-            
+        # if self.transform is not None:
+            data = {'color':image,'depth':depth, 'mask':mask}            
         return data
-
     def __len__(self):
         
         return len(self.image_paths)
-
-
