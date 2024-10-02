@@ -17,33 +17,33 @@ def main(config):
     os.environ['CUDA_VISIBLE_DEVICES'] = config.gpu
     cudnn.benchmark = True
 
-    config.distributed = config.world_size > 1 or config.multiprocessing_distributed
-    ngpus_per_node = torch.cuda.device_count()
+    # config.distributed = config.world_size > 1 or config.multiprocessing_distributed
+    # ngpus_per_node = torch.cuda.device_count()
 
-    if config.multiprocessing_distributed:
-        config.world_size = ngpus_per_node * config.world_size
-        torch.multiprocessing.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, config))
-    else:
-        main_worker(config.gpu, ngpus_per_node, config)
+    # if config.multiprocessing_distributed:
+    #     config.world_size = ngpus_per_node * config.world_size
+    #     torch.multiprocessing.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, config))
+    # else:
+    main_worker(config.gpu, config)
 
 
-def main_worker(gpu, ngpus_per_node, config):
+def main_worker(gpu, config):
     
     transform = transforms.Compose([
             transforms.ToTensor()])
     
     input_dir = ""
-    device_ids = [int(config.gpu)]
+    device_ids = int(config.gpu)
 
     if config.gpu is not None:
         print(f'Use GPU: {gpu} for training')
 
-    if config.distributed:
-        if config.dist_url == "envs://" and config.rank == -1:
-            config.rank = int(os.environ["RANK"])
-        if config.multiprocessing_distributed:
-            config.rank = config.rank * ngpus_per_node + gpu
-        torch.distributed.init_process_group(backend=config.dist_backend, init_method=config.dist_url, world_size=config.world_size, rank=config.rank)
+    # if config.distributed:
+        # if config.dist_url == "envs://" and config.rank == -1:
+        #     config.rank = int(os.environ["RANK"])
+        # if config.multiprocessing_distributed:
+        #     config.rank = config.rank * ngpus_per_node + gpu
+        # torch.distributed.init_process_group(backend=config.dist_backend, init_method=config.dist_url, world_size=config.world_size, rank=config.rank)
 
     if config.eval_data == 'Structure3D':
         val_loader = S3D_loader(config.S3D_path,transform = transform,transform_t = transform)
@@ -61,7 +61,7 @@ def main_worker(gpu, ngpus_per_node, config):
     else:
         print("Check the command option")
 # -------------------------------------------------------
-    device = torch.device('cuda', device_ids[0])
+    # device = torch.device('cuda', device_ids[0])
 
     val_dataloader = torch.utils.data.DataLoader(
     	val_loader,
@@ -103,15 +103,16 @@ if __name__ == '__main__':
                                  default="Image")
 
 
-    parser.add_argument('--S3D_path', help = 'Structure3D Data_path' , type=str, default='')
+    parser.add_argument('--S3D_path', help = 'Structure3D Data_path' , type=str, default='/workspace/datasets/Structured3D_SRC/test')
     parser.add_argument('--data_path', help = 'Data_path for inference' , type=str, default='')
 
     parser.add_argument('--num_workers' , type=int, default=1)
 
-    parser.add_argument('--checkpoint_path', type=str, default='')
+    # parser.add_argument('--checkpoint_path', type=str, default='/workspace/EGformer/checkpoints/default/models/EGformer-2.pth')
+    parser.add_argument('--checkpoint_path', type=str, default='/workspace/EGformer/pretrained_models/EGformer_pretrained.pkl')
 
 
-    parser.add_argument('--save_sample', help= 'if true, save depth results in the designated folder', action='store_true')
+    parser.add_argument('--save_sample', help= 'if true, save depth results in the designated folder', default=True,action='store_true')
     parser.add_argument('--output_path', help = 'folder where depth results will be saved' , type=str, default='output')
     
 
@@ -131,10 +132,10 @@ if __name__ == '__main__':
     ############ Distributed Data Parallel (DDP) ############
     parser.add_argument('--world_size', type=int, default=1)
     parser.add_argument('--rank', type=int, default=-1)
-    parser.add_argument('--gpu', type=str, default="0,1,2,3")
-    parser.add_argument('--dist-url', type=str, default="tcp://127.0.0.1:7777")
-    parser.add_argument('--dist-backend', type=str, default="nccl")
-    parser.add_argument('--multiprocessing_distributed', default=True)
+    parser.add_argument('--gpu', type=str, default="0")
+    # parser.add_argument('--dist-url', type=str, default="tcp://127.0.0.1:7777")
+    # parser.add_argument('--dist-backend', type=str, default="nccl")
+    # parser.add_argument('--multiprocessing_distributed', default=True)
     
 
     config = parser.parse_args()

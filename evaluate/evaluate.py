@@ -179,12 +179,13 @@ class Evaluation(object):
 
         print('Evaluating Panoformer')
         # Put the model in eval mode
-        torch.cuda.set_device(self.gpu)
+        # torch.cuda.set_device(self.gpu)
         
         self.net = PanoBiT()
-        self.net.cuda(self.gpu).eval()
+        self.net.cuda()
+        self.net.eval()
 
-        self.net = torch.nn.parallel.DistributedDataParallel(self.net, device_ids=[self.gpu], find_unused_parameters=True)
+        # self.net = torch.nn.parallel.DistributedDataParallel(self.net, device_ids=[self.gpu], find_unused_parameters=True)
  
 
         self.net.load_state_dict(torch.load(self.config.checkpoint_path),strict=True)
@@ -204,12 +205,12 @@ class Evaluation(object):
                     end='\r')
                
                 if self.config.eval_data == 'Structure3D':
-                    inputs = data[0].float().cuda()
- 
-                    gt = data[1].float().cuda()
+                    inputs = data['color'].float().cuda()
+
+                    gt = data['depth'].float().cuda()
                     # Because alignment process is applied before measuring the errors, scaling the depth range deos not affect the evaluation results; only the scales of each depth metrics become different. For better visibility, therefore, we set the depth scale equally for each testset to make depth metrics get similar scale range regardless of the testset.
-                    gt = gt / gt.max()
-                    gt = gt * 10.
+                    # gt = gt / gt.max()
+                    # gt = gt * 10.
 
                     self.input_shape = torch.zeros(inputs.shape)  # Used for calculating # params and MACs
                 
@@ -257,7 +258,13 @@ class Evaluation(object):
 
         # Print a report on the validation results
         print('Evaluation finished in {} seconds'.format(time.time() - s))
-        self.print_validation_report()   
+        self.print_validation_report() 
+    def rescale(self,tensor):
+        return tensor*10.0
+    def relative2Uabsolute(self,tensor):
+        return tensor*1000
+    def float2uint16(self,tensor):
+        return tensor*(pow(2,16)-1)
 
     def evaluate_egformer(self):
 
@@ -266,15 +273,29 @@ class Evaluation(object):
         # Put the model in eval mode
         
         self.use_hybrid = False
-        torch.cuda.set_device(self.gpu)
+        # torch.cuda.set_device(self.gpu)
         
         self.net = EGDepthModel(hybrid=self.use_hybrid)
 
-        self.net.cuda(self.gpu)
-        self.net = torch.nn.parallel.DistributedDataParallel(self.net, device_ids=[self.gpu], find_unused_parameters=True)
-
-        self.net.load_state_dict(torch.load(self.config.checkpoint_path),strict=False)
+        # self.net.cuda(self.gpu)
+        # self.net = torch.nn.parallel.DistributedDataParallel(self.net, device_ids=[self.gpu], find_unused_parameters=True)
+        from collections import OrderedDict
+        state_dict = torch.load(self.config.checkpoint_path,map_location=torch.device("cpu"))
+        # print(state_dict.keys())
+        new_state_dict = OrderedDict()
+        for k, v in state_dict.items():
+            name = k[7:] # 'module.'を削除
+            new_state_dict[name] = v
+        # print(new_state_dict.keys())
+        missing_keys, unexpected_keys = self.net.load_state_dict(new_state_dict,strict=False)
+        # missing_keys, unexpected_keys = self.net.load_state_dict(state_dict,strict=False)
+        print(f"Missing keys: {missing_keys}")
+        print(f"Unexpected keys: {unexpected_keys}")
+        self.net.cuda()
         self.net.eval()
+        for param in self.net.parameters():
+            param.requires_grad = False
+        # self.net.
 
         # Reset meter
         self.reset_eval_metrics()
@@ -290,12 +311,12 @@ class Evaluation(object):
                         self.val_dataloader)),
                     end='\r')
                 if self.config.eval_data == 'Structure3D':
-                    inputs = data[0].float().cuda()
-                    gt = data[1].float().cuda()
-                    # Because alignment process is applied before measuring the errors, scaling the depth range deos not affect the evaluation results; only the scales of each depth metrics become different. For better visibility, therefore, we set the depth scale equally for each testset to make depth metrics get similar scale range regardless of the testset.
-                    gt = gt / gt.max()
-                    gt = gt * 10.
+                    inputs = data['color'].float().cuda()
 
+                    gt = data['depth'].float().cuda()
+                    space = data['space'].float().cuda()
+                    gt =torch.clip(self.relative2Uabsolute(gt),0,pow(2,16)-1)
+                    space =torch.clip(self.relative2Uabsolute(space),0,pow(2,16)-1)
                     self.input_shape = torch.zeros(inputs.shape)  # Used for calculating # params and MACs
                 
                 elif self.config.eval_data == 'Pano3D':
@@ -312,25 +333,95 @@ class Evaluation(object):
                     inputs = data[0].float().cuda()
                     self.input_shape = torch.zeros(inputs.shape)  # Used for calculating # params and MACs
         
+                # output = self.net(inputs)
+                # print(inputs[0].shape)
+                
+                # from torchinfo import summary
 
-                features = self.net(inputs)
-                output = features
+                # print(summary(model=self.net, input_size=(inputs)))
+                output = self.net(inputs)
+                output =self.float2uint16(output/1000.0)
+                pred_init = output.detach().clone()
 
+                for i in range(pred_init.shape[0]):
+                    # dep_ = sample['dep'][i]
+                    dep_ = space[i]
+                    idx_nnz = torch.nonzero(dep_.view(-1) > 0.0001, as_tuple=False)
+                    B = dep_.view(-1)[idx_nnz]
+                    A = pred_init[i].view(-1)[idx_nnz]
+                    num_dep = A.shape[0]
+                    if num_dep < 16: 
+                        continue
+                    A = torch.cat((A,torch.ones(num_dep,1).to(A)),dim=1)
+                    X = torch.linalg.lstsq(A, B).solution
+                    # X = torch.pinverse(A) @ B
+                    X = X.to(pred_init)
+                    pred_init[i]  = torch.clip(pred_init[i] * X[0] + X[1],0,pow(2,16)-1)
+                #print(futures)
+
+                #for i,future in enumerate(futures):
+                #    print(i,"LAYER:",future.shape,future)
+                # print(futures)
                 if self.config.save_sample: 
                     
                     disp_pp = output
-                    
+
                     disp_pp = self.post_process_disparity(disp_pp) 
-                    disp_pp = disp_pp.squeeze()
+                    gt_pp = self.post_process_disparity(gt) 
+                    pred_init=self.post_process_disparity(pred_init)
+                    space_pp = self.post_process_disparity(space) 
+                    rgb_pp = self.post_process_disparity(inputs)
 
-                    vmax = np.percentile(disp_pp, 95)
-                    normalizer = mpl.colors.Normalize(vmin=disp_pp.min(), vmax=vmax)
-                    mapper = cm.ScalarMappable(norm=normalizer, cmap='viridis')
-                    disp_pp = (mapper.to_rgba(disp_pp)[:, :, :3] * 255).astype(np.uint8)
-
-                    save_name = str(batch_num) + '.png'
+                    # disp_pp = disp_pp.squeeze()
                     
-                    plt.imsave(os.path.join(self.config.output_path,save_name), disp_pp, cmap='viridis')
+
+                    # vmax = np.percentile(disp_pp*255, 95)
+                    # normalizer = mpl.colors.Normalize(vmin=disp_pp.min(), vmax=vmax)
+                    # mapper = cm.ScalarMappable(norm=normalizer, cmap='viridis')
+                    # disp_pp = (mapper.to_rgba(disp_pp)[:, :, :3] * 255).astype(np.uint8)
+                    # print(disp_pp.max(),disp_pp.mean())
+
+                    save_name = str(batch_num) + '_rel.png'
+                    import cv2
+                    disp_pp = disp_pp[0,0,:,:] 
+                    # disp_pp*=1000.
+                    # disp_pp=(disp_pp/self.post_process_disparity(gt).max())*pow(2,16)*8
+                    
+                    disp_pp=disp_pp.astype(np.uint16)
+                    # print(os.path.join(self.config.output_path,save_name),pow(2,16),disp_pp.max(),disp_pp.mean(),disp_pp.min())
+                    cv2.imwrite(os.path.join(self.config.output_path,save_name), disp_pp)
+
+                    #gt 
+                    save_name = str(batch_num) + '_gt.png'  
+                    gt_pp=gt_pp.astype(np.uint16)
+                    gt_pp = gt_pp[0,0,:,:] 
+                    # print(os.path.join(self.config.output_path,save_name),pow(2,16),gt_pp.max(),gt_pp.mean(),gt_pp.min())
+                    cv2.imwrite(os.path.join(self.config.output_path,save_name), gt_pp)
+
+                    # init_scale
+                    save_name = str(batch_num) + '_init.png' 
+
+                    pred_init=pred_init.astype(np.uint16)
+                    pred_init = pred_init[0,0,:,:] 
+                    # print(os.path.join(self.config.output_path,save_name),pow(2,16),pred_init.max(),pred_init.mean(),pred_init.min())
+                    cv2.imwrite(os.path.join(self.config.output_path,save_name), pred_init)
+
+                    # SpaceDepth
+                    save_name = str(batch_num) + '_space.png' 
+
+                    space_pp=space_pp.astype(np.uint16)
+                    space_pp = space_pp[0,0,:,:] 
+                    # print(os.path.join(self.config.output_path,save_name),pow(2,16),space_pp.max(),space_pp.mean(),space_pp.min())
+                    cv2.imwrite(os.path.join(self.config.output_path,save_name), space_pp)
+                    
+                     # RGB
+                    save_name = str(batch_num) + '_rgb.png' 
+
+                    rgb_pp=rgb_pp.astype(np.uint8)
+                    rgb_pp = rgb_pp[0,:,:,:].transpose(1,2,0)
+                    # print(os.path.join(self.config.output_path,save_name),pow(2,16),space_pp.max(),space_pp.mean(),space_pp.min())
+                    cv2.imwrite(os.path.join(self.config.output_path,save_name), rgb_pp)
+                    # plt.imsave(os.path.join(self.config.output_path,save_name), disp_pp, cmap='viridis')
 
                 if self.config.eval_data != 'Inference':
                     self.compute_eval_metrics(output, gt)
